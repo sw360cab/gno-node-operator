@@ -1,0 +1,22 @@
+# Short interval and threshold so the demo moves in seconds rather than minutes.
+apiVersion: monitoring.k8s.gno.land/v1alpha1
+kind: GnoNodeHealth
+metadata:
+  name: rpc-01
+  namespace: gno
+spec:
+  serviceRef: {name: gno-rpc-01, port: rpc-public}
+  interval: 5s
+  timeout: 3s
+  stallThreshold: 20s
+---
+apiVersion: monitoring.k8s.gno.land/v1alpha1
+kind: GnoNodeHealth
+metadata:
+  name: rpc-02
+  namespace: gno
+spec:
+  serviceRef: {name: gno-rpc-02, port: rpc-public}
+  interval: 5s
+  timeout: 3s
+  stallThreshold: 20s

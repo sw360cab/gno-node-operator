@@ -1,0 +1,76 @@
+# Two impersonated Gno RPC nodes. Both are healthy at first; the demo freezes
+# one of them at runtime to show Advancing flip to False.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gno
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gno-rpc-01
+  namespace: gno
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: gno-rpc-01}
+  template:
+    metadata:
+      labels: {app: gno-rpc-01}
+    spec:
+      containers:
+      - name: fakenode
+        image: fake-gno-node:v0.1.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: MONIKER,       value: gnocore-rpc-01}
+        - {name: CHAIN_ID,      value: test13}
+        - {name: START_HEIGHT,  value: "48000"}
+        - {name: BLOCK_TIME_MS, value: "2000"}
+        ports:
+        - {name: rpc-public, containerPort: 26657}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gno-rpc-01
+  namespace: gno
+spec:
+  selector: {app: gno-rpc-01}
+  ports:
+  - {name: rpc-public, port: 26657, targetPort: rpc-public}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gno-rpc-02
+  namespace: gno
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: gno-rpc-02}
+  template:
+    metadata:
+      labels: {app: gno-rpc-02}
+    spec:
+      containers:
+      - name: fakenode
+        image: fake-gno-node:v0.1.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: MONIKER,       value: gnocore-rpc-02}
+        - {name: CHAIN_ID,      value: test13}
+        - {name: START_HEIGHT,  value: "48000"}
+        - {name: BLOCK_TIME_MS, value: "2000"}
+        ports:
+        - {name: rpc-public, containerPort: 26657}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gno-rpc-02
+  namespace: gno
+spec:
+  selector: {app: gno-rpc-02}
+  ports:
+  - {name: rpc-public, port: 26657, targetPort: rpc-public}
