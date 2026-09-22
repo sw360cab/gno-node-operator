@@ -126,6 +126,15 @@ kubectl -n gno-node-health-system rollout status deploy/gno-node-health-controll
 kubectl -n gno-node-health-system logs deploy/gno-node-health-controller-manager | grep -i forbidden
 ```
 
+**Always pass `IMG=`.** `make deploy` on its own falls back to the Makefile default `controller:latest`, which exists in no registry. Worse, the API server defaults `imagePullPolicy` to `Always` for a `:latest` tag and writes that into the stored object, where it survives later applies — so a single `make deploy` without `IMG=` leaves the Deployment permanently on `Always`, ignoring images side-loaded with `kind load`, even after you redeploy with the right image. `manager.yaml` now pins `imagePullPolicy: IfNotPresent` to prevent this; if you hit it on an older deploy, `kubectl delete deploy` and redeploy to clear the stored value.
+
+When the operator is down the resources still exist but their columns are blank, because nothing is writing status:
+
+```console
+NAME     HEIGHT   REACHABLE   SYNCED   ADVANCING   AGE
+rpc-01                                             4m
+```
+
 Leader election means the pod waits for the previous lease to expire (~15s) before reconciling, so a restarted operator looks idle for a moment. An empty `forbidden` grep is the real check — RBAC failures are the usual first-deploy problem, and this operator needs `services` (to resolve `serviceRef`) plus `events.k8s.io` (a *different* API group from core `events`).
 
 ### 5. Uninstall
@@ -182,7 +191,7 @@ Two bugs were caught this way and are worth knowing about: `patchStatus` once sn
 
 ## Layout
 
-```
+```text
 api/v1alpha1/gnonodehealth_types.go   the CRD, as Go structs
 internal/controller/                  the reconcile loop
 internal/gnorpc/                      minimal tm2 RPC client

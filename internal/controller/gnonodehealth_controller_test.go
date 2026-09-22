@@ -67,17 +67,33 @@ var _ = Describe("GnoNodeHealth Controller", func() {
 	key := types.NamespacedName{Name: resourceName, Namespace: namespace}
 
 	var stub *stubProber
+	var recorder *events.FakeRecorder
 
-	// reconcilerFor wires the controller to the stub prober.
+	// reconcilerFor wires the controller to the stub prober. The recorder is
+	// shared across reconciles within a spec so emitted events can be drained.
 	reconcilerFor := func(s *stubProber) *GnoNodeHealthReconciler {
 		return &GnoNodeHealthReconciler{
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
-			Recorder: events.NewFakeRecorder(50),
+			Recorder: recorder,
 			NewProber: func(timeout time.Duration) prober {
 				s.lastTimeo = timeout
 				return s
 			},
+		}
+	}
+
+	// drainEvents returns every event emitted so far, without blocking.
+	drainEvents := func() []string {
+		GinkgoHelper()
+		var out []string
+		for {
+			select {
+			case e := <-recorder.Events:
+				out = append(out, e)
+			default:
+				return out
+			}
 		}
 	}
 
@@ -157,6 +173,7 @@ var _ = Describe("GnoNodeHealth Controller", func() {
 
 	BeforeEach(func() {
 		stub = &stubProber{status: healthyStatus(1000)}
+		recorder = events.NewFakeRecorder(100)
 	})
 
 	AfterEach(func() {
@@ -418,6 +435,72 @@ var _ = Describe("GnoNodeHealth Controller", func() {
 			// steady node must produce no writes at all. Otherwise every write
 			// wakes the watch and the loop never goes quiet.
 			Expect(fetch().ResourceVersion).To(Equal(settled))
+		})
+
+		It("emits one event per condition on first observation, none after", func() {
+			createNode(nil)
+
+			reconcileOnce()
+			first := drainEvents()
+			Expect(first).To(HaveLen(3), "one per condition: %v", first)
+			Expect(first).To(ContainElement(ContainSubstring("Reachable is True")))
+			Expect(first).To(ContainElement(ContainSubstring("Synced is True")))
+			Expect(first).To(ContainElement(ContainSubstring("Advancing is Unknown")))
+			// Unknown at startup is routine, not a problem.
+			Expect(first).NotTo(ContainElement(ContainSubstring("Warning")))
+
+			reconcileOnce()
+			drainEvents()
+			reconcileOnce()
+
+			// A steady node must go quiet, or every unhealthy node writes an
+			// event on every interval forever.
+			Expect(drainEvents()).To(BeEmpty())
+		})
+
+		It("emits a Warning when a condition transitions to False", func() {
+			createNode(nil)
+
+			// Get Advancing to True first: one observation to seed, a second
+			// with a higher height to establish progress.
+			reconcileOnce()
+			stub.status = healthyStatus(1001)
+			reconcileOnce()
+			Expect(conditionOf(monitoringv1alpha1.ConditionAdvancing).Status).
+				To(Equal(metav1.ConditionTrue))
+			drainEvents()
+
+			// Now halt the chain and backdate the last movement past the 5m
+			// threshold, so the next probe sees a genuine True -> False flip.
+			seedStatus(1001, 10*time.Minute)
+
+			reconcileOnce()
+
+			emitted := drainEvents()
+			Expect(emitted).To(ContainElement(SatisfyAll(
+				ContainSubstring("Warning"),
+				ContainSubstring("HeightStalled"),
+				ContainSubstring("Advancing changed from"),
+				ContainSubstring("to False"),
+			)), "got: %v", emitted)
+		})
+
+		It("emits a transition event when the node recovers", func() {
+			createNode(nil)
+			seedStatus(1000, 10*time.Minute)
+			stub.status = healthyStatus(1000)
+			reconcileOnce()
+			reconcileOnce()
+			drainEvents()
+
+			stub.status = healthyStatus(1001)
+			reconcileOnce()
+
+			emitted := drainEvents()
+			Expect(emitted).To(ContainElement(SatisfyAll(
+				ContainSubstring("Normal"),
+				ContainSubstring("Advancing changed from False to True"),
+			)), "got: %v", emitted)
 		})
 
 		It("is a no-op when the resource is gone", func() {

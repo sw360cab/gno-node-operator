@@ -292,7 +292,14 @@ func (r *GnoNodeHealthReconciler) setCondition(
 	node *monitoringv1alpha1.GnoNodeHealth,
 	condType string, status metav1.ConditionStatus, reason, message string,
 ) {
-	previous := meta.FindStatusCondition(node.Status.Conditions, condType)
+	// Capture the previous status BY VALUE. FindStatusCondition returns a
+	// pointer into the conditions slice and SetStatusCondition mutates that
+	// slice in place, so holding the pointer would mean comparing the updated
+	// condition against itself -- and no transition would ever be detected.
+	previousStatus, hadPrevious := metav1.ConditionStatus(""), false
+	if prev := meta.FindStatusCondition(node.Status.Conditions, condType); prev != nil {
+		previousStatus, hadPrevious = prev.Status, true
+	}
 
 	meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
 		Type:               condType,
@@ -305,17 +312,25 @@ func (r *GnoNodeHealthReconciler) setCondition(
 	// Emit only when the condition actually moves -- including the move from
 	// "not set yet" to its first value. A condition that stays False produces
 	// one event, not one per reconcile.
-	if previous == nil || previous.Status != status {
+	if !hadPrevious || previousStatus != status {
+		// Only False is a warning. Unknown is routine at startup, before a
+		// second observation exists, and an Unknown caused by a real problem
+		// is always accompanied by Reachable=False, which does warn.
 		eventType := corev1.EventTypeNormal
-		if status != metav1.ConditionTrue {
+		if status == metav1.ConditionFalse {
 			eventType = corev1.EventTypeWarning
 		}
-		from := "<none>"
-		if previous != nil {
-			from = string(previous.Status)
+
+		// The reason doubles as the event reason: HeightStalled and
+		// ProbeFailed say far more than a mechanical Advancing+False, and each
+		// one already names its condition unambiguously.
+		if !hadPrevious {
+			r.event(node, eventType, reason, "Observe",
+				"%s is %s: %s", condType, status, message)
+		} else {
+			r.event(node, eventType, reason, "Transition",
+				"%s changed from %s to %s: %s", condType, previousStatus, status, message)
 		}
-		r.event(node, eventType, condType+string(status), "Transition",
-			"%s: %s -> %s (%s)", condType, from, status, message)
 	}
 }
 

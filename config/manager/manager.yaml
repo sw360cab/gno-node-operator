@@ -64,6 +64,14 @@ spec:
           - --leader-elect
           - --health-probe-bind-address=:8081
         image: controller:latest
+        # Pinned explicitly rather than left to the API server, which defaults
+        # to Always for a :latest tag and IfNotPresent otherwise. That default
+        # is written into the stored object on first create and then survives
+        # later applies, so one `make deploy` without IMG= permanently leaves
+        # the Deployment on Always -- which ignores images side-loaded with
+        # `kind load` and fails to pull. Use a digest or Always for registries
+        # with mutable tags.
+        imagePullPolicy: IfNotPresent
         name: manager
         ports:
         - containerPort: 8081
