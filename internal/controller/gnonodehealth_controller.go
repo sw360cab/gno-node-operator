@@ -96,9 +96,11 @@ func (r *GnoNodeHealthReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	timeout := durationOrDefault(node.Spec.Timeout, defaultTimeout)
 	stallThreshold := durationOrDefault(node.Spec.StallThreshold, defaultStallThreshold)
 
-	// Snapshot the height we knew before this probe; stall detection compares
-	// against it, so it has to be read before status is touched.
+	// Snapshot state from before this probe. Stall detection compares against
+	// the previous height, and patchStatus compares against the whole previous
+	// status to decide whether a write is needed at all.
 	previousHeight := node.Status.LatestBlockHeight
+	previousStatus := node.Status.DeepCopy()
 
 	endpoint, err := r.resolveEndpoint(ctx, &node)
 	if err != nil {
@@ -108,7 +110,7 @@ func (r *GnoNodeHealthReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		r.markUnreachable(&node, monitoringv1alpha1.ReasonServiceMissing, err.Error())
 		// A missing Service is a user error, not a transient one. Requeue on
 		// the normal interval rather than hammering with backoff.
-		return ctrl.Result{RequeueAfter: interval}, r.patchStatus(ctx, &node)
+		return ctrl.Result{RequeueAfter: interval}, r.patchStatus(ctx, &node, previousStatus)
 	}
 	node.Status.Endpoint = endpoint
 
@@ -121,7 +123,7 @@ func (r *GnoNodeHealthReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// incident "last seen at height 48213, unreachable since 14:02" beats a
 		// zeroed field; lastProbeTime says how stale it is.
 		r.markUnreachable(&node, monitoringv1alpha1.ReasonProbeFailed, err.Error())
-		return ctrl.Result{RequeueAfter: interval}, r.patchStatus(ctx, &node)
+		return ctrl.Result{RequeueAfter: interval}, r.patchStatus(ctx, &node, previousStatus)
 	}
 
 	r.applyObservation(&node, status, previousHeight, stallThreshold)
@@ -129,7 +131,7 @@ func (r *GnoNodeHealthReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log.V(1).Info("probe succeeded",
 		"endpoint", endpoint, "height", status.Height, "catchingUp", status.CatchingUp)
 
-	return ctrl.Result{RequeueAfter: interval}, r.patchStatus(ctx, &node)
+	return ctrl.Result{RequeueAfter: interval}, r.patchStatus(ctx, &node, previousStatus)
 }
 
 // resolveEndpoint turns spec.serviceRef into an http:// URL.
@@ -232,20 +234,24 @@ func (r *GnoNodeHealthReconciler) applyObservation(
 	}
 
 	// Advancing: did the height move since the last observation?
+	//
+	// The first-observation case MUST be tested before the height comparison.
+	// On a fresh resource previousHeight is 0, so any real height looks like an
+	// increase and the node would be declared Advancing on a single data point.
 	switch {
+	case node.Status.LastHeightChangeTime == nil:
+		// Nothing to compare against yet. Start the clock and stay Unknown
+		// until a second observation exists.
+		node.Status.LastHeightChangeTime = &now
+		r.setCondition(node, monitoringv1alpha1.ConditionAdvancing, metav1.ConditionUnknown,
+			monitoringv1alpha1.ReasonNoObservation,
+			fmt.Sprintf("first observation at height %d", status.Height))
+
 	case status.Height > previousHeight:
 		node.Status.LastHeightChangeTime = &now
 		r.setCondition(node, monitoringv1alpha1.ConditionAdvancing, metav1.ConditionTrue,
 			monitoringv1alpha1.ReasonAdvancing,
 			fmt.Sprintf("height advanced to %d", status.Height))
-
-	case node.Status.LastHeightChangeTime == nil:
-		// First successful probe: there is nothing to compare against yet.
-		// Start the clock now and stay Unknown until the next observation.
-		node.Status.LastHeightChangeTime = &now
-		r.setCondition(node, monitoringv1alpha1.ConditionAdvancing, metav1.ConditionUnknown,
-			monitoringv1alpha1.ReasonNoObservation,
-			fmt.Sprintf("first observation at height %d", status.Height))
 
 	default:
 		stalledFor := now.Sub(node.Status.LastHeightChangeTime.Time)
@@ -256,10 +262,13 @@ func (r *GnoNodeHealthReconciler) applyObservation(
 		} else {
 			// Unchanged but still inside the grace window: a node between
 			// blocks looks exactly like a halted one for a moment.
+			// Deliberately no elapsed time in this message: it would change on
+			// every probe, so status would be rewritten every interval even
+			// though nothing meaningful happened.
 			r.setCondition(node, monitoringv1alpha1.ConditionAdvancing, metav1.ConditionTrue,
 				monitoringv1alpha1.ReasonAdvancing,
-				fmt.Sprintf("height %d unchanged for %s, within %s threshold",
-					status.Height, stalledFor.Round(time.Second), stallThreshold))
+				fmt.Sprintf("height %d unchanged, within the %s threshold",
+					status.Height, stallThreshold))
 		}
 	}
 }
@@ -323,14 +332,19 @@ func (r *GnoNodeHealthReconciler) event(
 // patchStatus writes status back, but only when it changed. An unconditional
 // write wakes the watch, which reconciles, which writes status again.
 func (r *GnoNodeHealthReconciler) patchStatus(
-	ctx context.Context, node *monitoringv1alpha1.GnoNodeHealth,
+	ctx context.Context,
+	node *monitoringv1alpha1.GnoNodeHealth,
+	previous *monitoringv1alpha1.GnoNodeHealthStatus,
 ) error {
-	before := node.Status.DeepCopy()
 	node.Status.ObservedGeneration = node.Generation
 
+	// previous must be a snapshot taken before this reconcile touched status.
+	// Copying it here instead would compare the mutated status against itself
+	// and silently never write anything.
+	//
 	// lastProbeTime moves on every reconcile, so comparing the whole status
 	// would always differ. Compare everything else.
-	if statusEqualIgnoringProbeTime(before, &node.Status) {
+	if statusEqualIgnoringProbeTime(previous, &node.Status) {
 		return nil
 	}
 
