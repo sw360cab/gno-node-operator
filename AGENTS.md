@@ -1,4 +1,4 @@
-# gno-node-health - AI Agent Guide
+# hello-operator - AI Agent Guide
 
 ## Project Structure
 

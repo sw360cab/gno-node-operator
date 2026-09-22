@@ -54,7 +54,11 @@ var _ = Describe("GnoNodeHealth Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: monitoringv1alpha1.GnoNodeHealthSpec{
+						ServiceRef: monitoringv1alpha1.ServiceReference{
+							Name: "gnoland-rpc",
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

@@ -1,9 +1,10 @@
 apiVersion: monitoring.k8s.gno.land/v1alpha1
 kind: GnoNodeHealth
 metadata:
-  labels:
-    app.kubernetes.io/name: gno-node-health
-    app.kubernetes.io/managed-by: kustomize
-  name: gnonodehealth-sample
+  name: gnoland-rpc
 spec:
-  # TODO(user): Add fields here
+  serviceRef:
+    name: gnoland-rpc
+    port: rpc-public
+  interval: 30s
+  stallThreshold: 5m
